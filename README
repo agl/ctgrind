@@ -1,0 +1,77 @@
+Checking that functions are constant time with Valgrind.
+
+Information leaks via timing side channels can be deadly. You can steal RSA keys from other processes on the same host [1], extract the kernel's dm_crypt keys [2] and steal AES keys over the network [3].
+
+In order for a function to be constant time, the branches taken and memory addresses accessed must be independent of any secret inputs. (That's assuming that the fundamental processor instructions are constant time, but that's true for all sane CPUs.)
+
+However, it's tough to write constant time functions. You can the source to a few simple ones in [4]. Sometimes the design of the function is fundamentally flawed (like AES), but even when the function can be efficiently implemented in a constant time fashion, it's easy to slip up. Careful code review is currently the best practice but it's error prone as the amount of code increases and fragile in the face of change.
+
+A type system could probably help here, but that's not the path I'm taking today. Since cryptographic functions result in abnormally straight line code, it's common for a typical input to exercise every instruction. So a tool like Valgrind could check all the branches and memory accesses to make sure that they haven't been tainted with secret data.
+
+This would mean keeping track of every bit in memory to know if it's secret or not, likewise for all the CPU registers. Preferably at the bit level. The tool would also have to know that adding secret and non-secret data results in secret data etc. That suggests that it would be quite a complex tool.
+
+But memcheck already does this! In order to keep track of uninitialised data it shadows every bit of memory will will warn you if you use uninitialised data in a branch or to index a memory access. So if we could tell memcheck to treat our secret data as uninitialised, everything should just work.
+
+The valgrind patch does just that (against SVN r11097). It will intercept any calls to ct_poison and ct_unpoison in libctgrind.so*.
+
+Let's look at a bad way to test a 128-bit MAC against a calculated value:
+
+char check16_bad(unsigned char *a, unsigned char *b) {
+  unsigned i;
+  for (i = 0; i < 16; i++) {
+    if (a[i] != b[i])
+      return 0;
+  }
+
+  return 1;
+}
+
+And now, testing it with memcheck/ctgrind:
+
+int
+main() {
+  unsigned char a[16], b[16];
+
+  memset(a, 42, sizeof(a));
+  memset(b, 42, sizeof(b));
+
+  ct_poison(a, sizeof(a));
+
+  printf("check16_bad\n");
+  check16_bad(a, b);
+
+  return 0;
+}
+
+$ /home/agl/devel/valgrind/vg-in-place ./a.out
+...
+check16_bad
+==30993== Conditional jump or move depends on uninitialised value(s)
+==30993==    at 0x40067F: check16_bad (test.c:11)
+==30993==    by 0x40075F: main (test.c:44)
+
+It seems to work! There are a few other tests in test.c which show the correct way to implement that function and well as a demo that secret dependent memory accesses are also caught by this tool.
+
+We can test a few other things too. It confirms that donna-c64 [5] is constant time, which is nice. I also tested BN_mod_exp_mont_consttime from OpenSSL since that's a large function which calls functions from several other files.
+
+It turns out not to be constant time! There's a secret dependent memory access:
+
+==31076== Use of uninitialised value of size 8
+==31076==    at 0x402210: MOD_EXP_CTIME_COPY_FROM_PREBUF (bn_exp.c:554)
+==31076==    by 0x40277B: BN_mod_exp_mont_consttime (bn_exp.c:703)
+==31076==    by 0x4011FF: main (ossl.c:24)
+
+From inspection of the code, this appears to be a true positive. To be fair, the comment above the function suggests that it's rather misnamed:
+
+/* This variant of BN_mod_exp_mont() uses fixed windows and the special
+ * precomputation memory layout to limit data-dependency to a minimum
+ * to protect secret exponents
+
+It only claims to "limit" the side-channel leaks. I don't know how serious this is, but then you never do till someone gets a paper published by stealing all your secrets.
+
+
+[1] http://www.daemonology.net/papers/htt.pdf
+[2] http://www.springerlink.com/content/73876v1qq07q0277/ (paywall)
+[3] http://cr.yp.to/antiforgery/cachetiming-20050414.pdf
+[4] http://golang.org/src/pkg/crypto/subtle/constant_time.go
+[5] http://code.google.com/p/curve25519-donna/

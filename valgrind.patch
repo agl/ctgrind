@@ -1,0 +1,138 @@
+Index: memcheck/mc_main.c
+===================================================================
+--- memcheck/mc_main.c	(revision 11097)
++++ memcheck/mc_main.c	(working copy)
+@@ -5774,6 +5774,14 @@
+    }
+ }
+ 
++void MC_(poison) (Word tid, void* addr, SizeT len) {
++  make_mem_undefined((Addr) addr, len);
++}
++
++void MC_(unpoison) (Word tid, void* addr, SizeT len) {
++  MC_(make_mem_defined) ((Addr) addr, len);
++}
++
+ static void mc_pre_clo_init(void)
+ {
+    VG_(details_name)            ("Memcheck");
+@@ -5809,6 +5817,8 @@
+    VG_(needs_client_requests)     (mc_handle_client_request);
+    VG_(needs_sanity_checks)       (mc_cheap_sanity_check,
+                                    mc_expensive_sanity_check);
++   VG_(needs_poison_func)         (MC_(poison),
++                                   MC_(unpoison));
+    VG_(needs_malloc_replacement)  (MC_(malloc),
+                                    MC_(__builtin_new),
+                                    MC_(__builtin_vec_new),
+Index: include/valgrind.h
+===================================================================
+--- include/valgrind.h	(revision 11097)
++++ include/valgrind.h	(working copy)
+@@ -4151,7 +4151,9 @@
+           VG_USERREQ__STACK_CHANGE     = 0x1503,
+ 
+           /* Wine support */
+-          VG_USERREQ__LOAD_PDB_DEBUGINFO = 0x1601
++          VG_USERREQ__LOAD_PDB_DEBUGINFO = 0x1601,
++
++          VG_USERREQ__GET_POISONFUNCS  = 0x1602,
+    } Vg_ClientRequest;
+ 
+ #if !defined(__GNUC__)
+Index: coregrind/vg_preloaded.c
+===================================================================
+--- coregrind/vg_preloaded.c	(revision 11097)
++++ coregrind/vg_preloaded.c	(working copy)
+@@ -184,6 +184,34 @@
+ #  error Unknown OS
+ #endif
+ 
++static int init_done = 0;
++static void (*poison_funcs[2]) (void*, SizeT);
++
++static void init_if_needed() {
++	if (!init_done) {
++		int res;
++		init_done = 1;
++		VALGRIND_DO_CLIENT_REQUEST(res, -1, VG_USERREQ__GET_POISONFUNCS, &poison_funcs,
++					   0, 0, 0, 0);
++	}
++}
++
++void VG_REPLACE_FUNCTION_ZU(libctgrindZdsoZa, ct_poison)(void *ptr, SizeT len);
++void VG_REPLACE_FUNCTION_ZU(libctgrindZdsoZa, ct_poison)(void *ptr, SizeT len) {
++	init_if_needed();
++
++	if (poison_funcs[0])
++		VALGRIND_NON_SIMD_CALL2(poison_funcs[0], ptr, len);
++}
++
++void VG_REPLACE_FUNCTION_ZU(libctgrindZdsoZa, ct_unpoison)(void *ptr, SizeT len);
++void VG_REPLACE_FUNCTION_ZU(libctgrindZdsoZa, ct_unpoison)(void *ptr, SizeT len) {
++	init_if_needed();
++
++	if (poison_funcs[1])
++		VALGRIND_NON_SIMD_CALL2(poison_funcs[1], ptr, len);
++}
++
+ /*--------------------------------------------------------------------*/
+ /*--- end                                                          ---*/
+ /*--------------------------------------------------------------------*/
+Index: coregrind/m_tooliface.c
+===================================================================
+--- coregrind/m_tooliface.c	(revision 11097)
++++ coregrind/m_tooliface.c	(working copy)
+@@ -317,6 +317,15 @@
+    VG_(tdict).tool_client_redzone_szB   = client_malloc_redzone_szB;
+ }
+ 
++void VG_(needs_poison_func)(
++   void (*poison_func)           ( void*, SizeT ),
++   void (*unpoison_func)         ( void*, SizeT )
++)
++{
++   VG_(tdict).tool_poison = poison_func;
++   VG_(tdict).tool_unpoison = unpoison_func;
++}
++
+ void VG_(needs_xml_output)( void )
+ {
+    VG_(needs).xml_output = True;
+Index: coregrind/pub_core_tooliface.h
+===================================================================
+--- coregrind/pub_core_tooliface.h	(revision 11097)
++++ coregrind/pub_core_tooliface.h	(working copy)
+@@ -159,6 +159,10 @@
+    SizeT (*tool_malloc_usable_size)  (ThreadId, void*);
+    SizeT tool_client_redzone_szB;
+ 
++   // VG_(needs).poison
++   void (*tool_poison)               (void*, SizeT);
++   void (*tool_unpoison)             (void*, SizeT);
++
+    // VG_(needs).final_IR_tidy_pass
+    IRSB* (*tool_final_IR_tidy_pass)  (IRSB*);
+ 
+Index: coregrind/m_scheduler/scheduler.c
+===================================================================
+--- coregrind/m_scheduler/scheduler.c	(revision 11097)
++++ coregrind/m_scheduler/scheduler.c	(working copy)
+@@ -1407,6 +1407,16 @@
+          SET_CLREQ_RETVAL(tid, RUNNING_ON_VALGRIND+1);
+          break;
+ 
++      case VG_USERREQ__GET_POISONFUNCS: {
++         void (**poisonfunc) (void*, SizeT);
++         poisonfunc = (void (**) (void*, SizeT)) arg[1];
++         poisonfunc[0] = VG_(tdict).tool_poison;
++         poisonfunc[1] = VG_(tdict).tool_unpoison;
++         SET_CLREQ_RETVAL( tid, 0 );     /* return value is meaningless */
++
++	 break;
++      }
++
+       case VG_USERREQ__PRINTF: {
+          /* JRS 2010-Jan-28: this is DEPRECATED; use the
+             _VALIST_BY_REF version instead */
