@@ -10,7 +10,7 @@ A type system could probably help here, but that's not the path I'm taking today
 
 This would mean keeping track of every bit in memory to know if it's secret or not, likewise for all the CPU registers. Preferably at the bit level. The tool would also have to know that adding secret and non-secret data results in secret data etc. That suggests that it would be quite a complex tool.
 
-But memcheck already does this! In order to keep track of uninitialised data it shadows every bit of memory will will warn you if you use uninitialised data in a branch or to index a memory access. So if we could tell memcheck to treat our secret data as uninitialised, everything should just work.
+But memcheck already does this! In order to keep track of uninitialised data it shadows every bit of memory and will warn you if you use uninitialised data in a branch or to index a memory access. So if we could tell memcheck to treat our secret data as uninitialised, everything should just work.
 
 The valgrind patch does just that (against SVN r11097). It will intercept any calls to ct_poison and ct_unpoison in libctgrind.so*.
 
@@ -50,7 +50,7 @@ check16_bad
 ==30993==    at 0x40067F: check16_bad (test.c:11)
 ==30993==    by 0x40075F: main (test.c:44)
 
-It seems to work! There are a few other tests in test.c which show the correct way to implement that function and well as a demo that secret dependent memory accesses are also caught by this tool.
+It seems to work! There are a few other tests in test.c which show the correct way to implement that function and well as a demo to show that secret dependent memory accesses are also caught by this tool.
 
 We can test a few other things too. It confirms that donna-c64 [5] is constant time, which is nice. I also tested BN_mod_exp_mont_consttime from OpenSSL since that's a large function which calls functions from several other files.
 
