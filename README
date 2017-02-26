@@ -12,7 +12,7 @@ This would mean keeping track of every bit in memory to know if it's secret or n
 
 But memcheck already does this! In order to keep track of uninitialised data it shadows every bit of memory and will warn you if you use uninitialised data in a branch or to index a memory access. So if we could tell memcheck to treat our secret data as uninitialised, everything should just work.
 
-The valgrind patch does just that (against SVN r11097). It will intercept any calls to ct_poison and ct_unpoison in libctgrind.so*.
+The valgrind patch does just that (against version 3.12.0). It will intercept any calls to ct_poison and ct_unpoison in libctgrind.so*.
 
 Let's look at a bad way to test a 128-bit MAC against a calculated value:
 

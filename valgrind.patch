@@ -1,51 +1,69 @@
-Index: memcheck/mc_main.c
-===================================================================
---- memcheck/mc_main.c	(revision 11097)
-+++ memcheck/mc_main.c	(working copy)
-@@ -5774,6 +5774,14 @@
-    }
+diff -Nru valgrind-3.12.0/coregrind/m_scheduler/scheduler.c valgrind-3.12.0.new/coregrind/m_scheduler/scheduler.c
+--- valgrind-3.12.0/coregrind/m_scheduler/scheduler.c	2016-10-21 06:37:40.000000000 -0400
++++ valgrind-3.12.0.new/coregrind/m_scheduler/scheduler.c	2017-02-26 15:15:47.060402608 -0500
+@@ -1884,6 +1884,16 @@
+          SET_CLREQ_RETVAL(tid, RUNNING_ON_VALGRIND+1);
+          break;
+ 
++      case VG_USERREQ__GET_POISONFUNCS: {
++	 void (**poisonfunc) (ThreadId,void*, SizeT);
++         poisonfunc = (void (**) (ThreadId,void*, SizeT)) arg[1];
++         poisonfunc[0] = VG_(tdict).tool_poison;
++         poisonfunc[1] = VG_(tdict).tool_unpoison;
++         SET_CLREQ_RETVAL( tid, 0 );     /* return value is meaningless */
++
++	 break;
++      }
++
+       case VG_USERREQ__PRINTF: {
+          const HChar* format = (HChar *)arg[1];
+          /* JRS 2010-Jan-28: this is DEPRECATED; use the
+diff -Nru valgrind-3.12.0/coregrind/m_tooliface.c valgrind-3.12.0.new/coregrind/m_tooliface.c
+--- valgrind-3.12.0/coregrind/m_tooliface.c	2016-10-21 06:37:40.000000000 -0400
++++ valgrind-3.12.0.new/coregrind/m_tooliface.c	2017-02-26 15:13:23.375839789 -0500
+@@ -358,6 +358,16 @@
+    VG_(tdict).tool_client_redzone_szB   = client_malloc_redzone_szB;
  }
  
-+void MC_(poison) (Word tid, void* addr, SizeT len) {
-+  make_mem_undefined((Addr) addr, len);
++void VG_(needs_poison_func)(
++   void (*poison_func)           ( ThreadId, void*, SizeT ),
++   void (*unpoison_func)         ( ThreadId, void*, SizeT )
++)
++{
++   VG_(needs).poison = True;
++   VG_(tdict).tool_poison = poison_func;
++   VG_(tdict).tool_unpoison = unpoison_func;
 +}
 +
-+void MC_(unpoison) (Word tid, void* addr, SizeT len) {
-+  MC_(make_mem_defined) ((Addr) addr, len);
-+}
-+
- static void mc_pre_clo_init(void)
+ void VG_(needs_xml_output)( void )
  {
-    VG_(details_name)            ("Memcheck");
-@@ -5809,6 +5817,8 @@
-    VG_(needs_client_requests)     (mc_handle_client_request);
-    VG_(needs_sanity_checks)       (mc_cheap_sanity_check,
-                                    mc_expensive_sanity_check);
-+   VG_(needs_poison_func)         (MC_(poison),
-+                                   MC_(unpoison));
-    VG_(needs_malloc_replacement)  (MC_(malloc),
-                                    MC_(__builtin_new),
-                                    MC_(__builtin_vec_new),
-Index: include/valgrind.h
-===================================================================
---- include/valgrind.h	(revision 11097)
-+++ include/valgrind.h	(working copy)
-@@ -4151,7 +4151,9 @@
-           VG_USERREQ__STACK_CHANGE     = 0x1503,
+    VG_(needs).xml_output = True;
+diff -Nru valgrind-3.12.0/coregrind/pub_core_tooliface.h valgrind-3.12.0.new/coregrind/pub_core_tooliface.h
+--- valgrind-3.12.0/coregrind/pub_core_tooliface.h	2016-10-21 06:37:39.000000000 -0400
++++ valgrind-3.12.0.new/coregrind/pub_core_tooliface.h	2017-02-26 15:52:41.370367848 -0500
+@@ -92,6 +92,7 @@
+       Bool print_stats;
+       Bool info_location;
+       Bool var_info;
++      Bool poison;
+       Bool malloc_replacement;
+       Bool xml_output;
+       Bool final_IR_tidy_pass;
+@@ -171,6 +172,10 @@
+    SizeT (*tool_malloc_usable_size)  (ThreadId, void*);
+    SizeT tool_client_redzone_szB;
  
-           /* Wine support */
--          VG_USERREQ__LOAD_PDB_DEBUGINFO = 0x1601
-+          VG_USERREQ__LOAD_PDB_DEBUGINFO = 0x1601,
++   // VG_(needs).poison
++   void (*tool_poison)               (ThreadId, void*, SizeT);
++   void (*tool_unpoison)             (ThreadId, void*, SizeT);
 +
-+          VG_USERREQ__GET_POISONFUNCS  = 0x1602,
-    } Vg_ClientRequest;
+    // VG_(needs).final_IR_tidy_pass
+    IRSB* (*tool_final_IR_tidy_pass)  (IRSB*);
  
- #if !defined(__GNUC__)
-Index: coregrind/vg_preloaded.c
-===================================================================
---- coregrind/vg_preloaded.c	(revision 11097)
-+++ coregrind/vg_preloaded.c	(working copy)
-@@ -184,6 +184,34 @@
+diff -Nru valgrind-3.12.0/coregrind/vg_preloaded.c valgrind-3.12.0.new/coregrind/vg_preloaded.c
+--- valgrind-3.12.0/coregrind/vg_preloaded.c	2016-10-21 06:37:40.000000000 -0400
++++ valgrind-3.12.0.new/coregrind/vg_preloaded.c	2017-02-26 13:21:22.494033688 -0500
+@@ -374,6 +374,34 @@
  #  error Unknown OS
  #endif
  
@@ -80,59 +98,90 @@ Index: coregrind/vg_preloaded.c
  /*--------------------------------------------------------------------*/
  /*--- end                                                          ---*/
  /*--------------------------------------------------------------------*/
-Index: coregrind/m_tooliface.c
-===================================================================
---- coregrind/m_tooliface.c	(revision 11097)
-+++ coregrind/m_tooliface.c	(working copy)
-@@ -317,6 +317,15 @@
-    VG_(tdict).tool_client_redzone_szB   = client_malloc_redzone_szB;
+diff -Nru valgrind-3.12.0/include/pub_tool_tooliface.h valgrind-3.12.0.new/include/pub_tool_tooliface.h
+--- valgrind-3.12.0/include/pub_tool_tooliface.h	2016-10-21 06:37:39.000000000 -0400
++++ valgrind-3.12.0.new/include/pub_tool_tooliface.h	2017-02-26 15:09:36.815451982 -0500
+@@ -469,6 +469,11 @@
+ /* Do we need to see variable type and location information? */
+ extern void VG_(needs_var_info) ( void );
+ 
++extern void VG_(needs_poison_func)(
++  void (*poison)                  (ThreadId tid, void* addr, SizeT len),
++  void (*unpoison)                (ThreadId tid, void* addr, SizeT len)
++);
++
+ /* Does the tool replace malloc() and friends with its own versions?
+    This has to be combined with the use of a vgpreload_<tool>.so module
+    or it won't work.  See massif/Makefile.am for how to build it. */
+diff -Nru valgrind-3.12.0/include/valgrind.h valgrind-3.12.0.new/include/valgrind.h
+--- valgrind-3.12.0/include/valgrind.h	2016-10-21 06:37:39.000000000 -0400
++++ valgrind-3.12.0.new/include/valgrind.h	2017-02-26 13:21:26.317391851 -0500
+@@ -6714,7 +6714,10 @@
+           VG_USERREQ__CHANGE_ERR_DISABLEMENT = 0x1801,
+ 
+           /* Initialise IR injection */
+-          VG_USERREQ__VEX_INIT_FOR_IRI = 0x1901
++          VG_USERREQ__VEX_INIT_FOR_IRI = 0x1901,
++
++	  /* ctgrind poisoning */
++	  VG_USERREQ__GET_POISONFUNCS = 0x2001,
+    } Vg_ClientRequest;
+ 
+ #if !defined(__GNUC__)
+diff -Nru valgrind-3.12.0/include/valgrind.h.rej valgrind-3.12.0.new/include/valgrind.h.rej
+--- valgrind-3.12.0/include/valgrind.h.rej	1969-12-31 19:00:00.000000000 -0500
++++ valgrind-3.12.0.new/include/valgrind.h.rej	2017-02-26 13:21:22.494033688 -0500
+@@ -0,0 +1,13 @@
++--- include/valgrind.h	(revision 11097)
+++++ include/valgrind.h	(working copy)
++@@ -4151,7 +4151,9 @@
++           VG_USERREQ__STACK_CHANGE     = 0x1503,
++ 
++           /* Wine support */
++-          VG_USERREQ__LOAD_PDB_DEBUGINFO = 0x1601
+++          VG_USERREQ__LOAD_PDB_DEBUGINFO = 0x1601,
+++
+++          VG_USERREQ__GET_POISONFUNCS  = 0x1602,
++    } Vg_ClientRequest;
++ 
++ #if !defined(__GNUC__)
+diff -Nru valgrind-3.12.0/memcheck/mc_include.h valgrind-3.12.0.new/memcheck/mc_include.h
+--- valgrind-3.12.0/memcheck/mc_include.h	2016-10-21 06:37:39.000000000 -0400
++++ valgrind-3.12.0.new/memcheck/mc_include.h	2017-02-26 15:17:20.105184988 -0500
+@@ -161,7 +161,8 @@
+ 
+ void MC_(handle_resizeInPlace)(ThreadId tid, Addr p,
+                                SizeT oldSizeB, SizeT newSizeB, SizeT rzB);
+-
++void MC_(poison)(ThreadId tid, void *addr, SizeT len);
++void MC_(unpoison)(ThreadId tid, void *addr, SizeT len);
+ 
+ /*------------------------------------------------------------*/
+ /*--- Origin tracking translate-time support               ---*/
+diff -Nru valgrind-3.12.0/memcheck/mc_main.c valgrind-3.12.0.new/memcheck/mc_main.c
+--- valgrind-3.12.0/memcheck/mc_main.c	2016-10-21 06:37:39.000000000 -0400
++++ valgrind-3.12.0.new/memcheck/mc_main.c	2017-02-26 15:08:33.549478930 -0500
+@@ -8093,6 +8093,14 @@
+    return True;
  }
  
-+void VG_(needs_poison_func)(
-+   void (*poison_func)           ( void*, SizeT ),
-+   void (*unpoison_func)         ( void*, SizeT )
-+)
-+{
-+   VG_(tdict).tool_poison = poison_func;
-+   VG_(tdict).tool_unpoison = unpoison_func;
++void MC_(poison) (ThreadId tid, void* addr, SizeT len) {
++  make_mem_undefined((Addr) addr, len);
 +}
 +
- void VG_(needs_xml_output)( void )
++void MC_(unpoison) (ThreadId tid, void* addr, SizeT len) {
++  MC_(make_mem_defined) ((Addr) addr, len);
++}
++
+ static void mc_pre_clo_init(void)
  {
-    VG_(needs).xml_output = True;
-Index: coregrind/pub_core_tooliface.h
-===================================================================
---- coregrind/pub_core_tooliface.h	(revision 11097)
-+++ coregrind/pub_core_tooliface.h	(working copy)
-@@ -159,6 +159,10 @@
-    SizeT (*tool_malloc_usable_size)  (ThreadId, void*);
-    SizeT tool_client_redzone_szB;
- 
-+   // VG_(needs).poison
-+   void (*tool_poison)               (void*, SizeT);
-+   void (*tool_unpoison)             (void*, SizeT);
-+
-    // VG_(needs).final_IR_tidy_pass
-    IRSB* (*tool_final_IR_tidy_pass)  (IRSB*);
- 
-Index: coregrind/m_scheduler/scheduler.c
-===================================================================
---- coregrind/m_scheduler/scheduler.c	(revision 11097)
-+++ coregrind/m_scheduler/scheduler.c	(working copy)
-@@ -1407,6 +1407,16 @@
-          SET_CLREQ_RETVAL(tid, RUNNING_ON_VALGRIND+1);
-          break;
- 
-+      case VG_USERREQ__GET_POISONFUNCS: {
-+         void (**poisonfunc) (void*, SizeT);
-+         poisonfunc = (void (**) (void*, SizeT)) arg[1];
-+         poisonfunc[0] = VG_(tdict).tool_poison;
-+         poisonfunc[1] = VG_(tdict).tool_unpoison;
-+         SET_CLREQ_RETVAL( tid, 0 );     /* return value is meaningless */
-+
-+	 break;
-+      }
-+
-       case VG_USERREQ__PRINTF: {
-          /* JRS 2010-Jan-28: this is DEPRECATED; use the
-             _VALIST_BY_REF version instead */
+    VG_(details_name)            ("Memcheck");
+@@ -8133,6 +8141,8 @@
+                                    mc_expensive_sanity_check);
+    VG_(needs_print_stats)         (mc_print_stats);
+    VG_(needs_info_location)       (MC_(pp_describe_addr));
++   VG_(needs_poison_func)         (MC_(poison),
++				   MC_(unpoison));
+    VG_(needs_malloc_replacement)  (MC_(malloc),
+                                    MC_(__builtin_new),
+                                    MC_(__builtin_vec_new),
